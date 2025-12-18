@@ -3,4 +3,3 @@
 *.exe
 terraform.tfstate*
 *.pem
-.terraform/
