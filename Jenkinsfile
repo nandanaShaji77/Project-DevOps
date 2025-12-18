@@ -8,13 +8,6 @@ pipeline {
         AWS_DEFAULT_REGION = "us-east-1"
         
     }
-  
-    stages {
-        stage('Hello') {
-            steps {
-                echo 'Jenkins Multibranch Pipeline is working!'
-            }
-        }
  
     stages {
 
