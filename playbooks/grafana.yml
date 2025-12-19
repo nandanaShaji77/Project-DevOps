@@ -30,3 +30,9 @@
         name: grafana-server
         state: started
         enabled: yes
+
+    - name: Wait for grafana to come online
+      ansible.builtin.uri:
+        port: 3000
+        delay: 5
+        timeout: 30
