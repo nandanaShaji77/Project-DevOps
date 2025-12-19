@@ -49,10 +49,7 @@ pipeline {
                 branch 'dev'
             }
             steps {
-                input {
-                    message "Apply Terraform changes?"
-                    ok "Apply"
-                }
+                input message: "Apply Terraform changes?", ok: "Apply"
             }
         }
 
@@ -104,10 +101,7 @@ pipeline {
                 branch 'dev'
             }
             steps {
-                input {
-                    message "Run Ansible configuration?"
-                    ok "Run Ansible"
-                }
+                input message: "Run Ansible configuration?", ok: "Run Ansible"
             }
         }
 
@@ -129,10 +123,7 @@ pipeline {
 
         stage('Approve Destroy') {
             steps {
-                input {
-                    message "Destroy infrastructure?"
-                    ok "Destroy"
-                }
+                input message: "Destroy infrastructure?", ok: "Destroy"
             }
         }
 
