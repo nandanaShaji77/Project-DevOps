@@ -3,157 +3,128 @@ pipeline {
 
     environment {
         TF_IN_AUTOMATION = 'true'
-        TF_CLI_ARGS     = '-no-color'
-        SSH_CRED_ID     = 'aws-deployer-ssh-key'
-        AWS_REGION      = 'us-east-2'
+        TF_CLI_ARGS = '-no-color'
+        SSH_CRED_ID = 'aws-deployer-ssh-key' 
+        TF_CLI_CONFIG_FILE = credentials('aws-creds')
     }
 
     stages {
-
-        stage('Checkout') {
+        stage('Terraform Initialization') {
             steps {
-                checkout scm
+                sh 'terraform init'
+                sh "cat ${env.BRANCH_NAME}.tfvars"
             }
         }
-
-        stage('Terraform Init') {
-            steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    sh '''
-                        aws sts get-caller-identity
-                        terraform init
-                    '''
-                }
-            }
-        }
-
         stage('Terraform Plan') {
             steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    sh """
-                        test -f ${BRANCH_NAME}.tfvars
-                        terraform plan -var-file=${BRANCH_NAME}.tfvars
-                    """
-                }
+                sh "terraform plan -var-file=${env.BRANCH_NAME}.tfvars"
             }
         }
-
-        stage('Approve Apply') {
+        stage('Validate Apply') {
             when {
-                branch 'dev'
+                    beforeInput true
+                    branch 'dev'
+            }
+            input {
+                message "Do you want to apply this plan?"
+                ok "Apply"
             }
             steps {
-                input message: "Apply Terraform changes?", ok: "Apply"
+                echo 'Apply Accepted'
             }
         }
-
-        stage('Terraform Apply') {
+        stage('Terraform Provisioning') {
             steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    script {
-                        sh "terraform apply -auto-approve -var-file=${BRANCH_NAME}.tfvars"
+                script {
+                    sh "terraform apply -auto-approve -var-file=${env.BRANCH_NAME}.tfvars"
 
-                        env.INSTANCE_IP = sh(
-                            script: "terraform output -raw instance_public_ip",
-                            returnStdout: true
-                        ).trim()
+                    // 1. Extract Public IP Address of the provisioned instance
+                    env.INSTANCE_IP = sh(
+                        script: 'terraform output -raw instance_public_ip', 
+                        returnStdout: true
+                    ).trim()
+                    
+                    // 2. Extract Instance ID (for AWS CLI wait) 
+                    env.INSTANCE_ID = sh(
+                        script: 'terraform output -raw instance_id', 
+                        returnStdout: true
+                    ).trim()
 
-                        env.INSTANCE_ID = sh(
-                            script: "terraform output -raw instance_id",
-                            returnStdout: true
-                        ).trim()
-
-                        echo "Instance IP: ${env.INSTANCE_IP}"
-                        echo "Instance ID: ${env.INSTANCE_ID}"
-
-                        sh "echo ${env.INSTANCE_IP} > dynamic_inventory.ini"
-                    }
+                    echo "Provisioned Instance IP: ${env.INSTANCE_IP}"
+                    echo "Provisioned Instance ID: ${env.INSTANCE_ID}"
+                    
+                    // 3. Create a dynamic inventory file for Ansible 
+                    sh "echo '${env.INSTANCE_IP}' > dynamic_inventory.ini"
                 }
             }
         }
 
-        stage('Wait for Instance Health') {
+        stage('Wait for AWS Instance Status') {
             steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    sh """
-                        aws ec2 wait instance-status-ok \
-                        --instance-ids ${INSTANCE_ID} \
-                        --region ${AWS_REGION}
-                    """
-                }
+                echo "Waiting for instance ${env.INSTANCE_ID} to pass AWS health checks..."
+                
+                // --- This is the simple, powerful AWS CLI command ---
+                // It polls AWS until status checks pass or it hits the default timeout (usually 15 minutes)
+                sh "aws ec2 wait instance-status-ok --instance-ids ${env.INSTANCE_ID} --region us-east-2"  
+                
+                echo 'AWS instance health checks passed. Proceeding to Ansible.'
             }
         }
-
-        stage('Approve Ansible') {
+        stage('Validate Ansible') {
             when {
-                branch 'dev'
+                    beforeInput true
+                    branch 'dev'
+            }
+            input {
+                message "Do you want to run Ansible?"
+                ok "Run Ansible"
             }
             steps {
-                input message: "Run Ansible configuration?", ok: "Run Ansible"
+                echo 'Ansible approved'
             }
         }
-
-        stage('Ansible Configuration') {
+        stage('Ansible Configuration and Testing') {
             steps {
+                // Now you can proceed directly to Ansible, knowing SSH is almost certainly ready.
                 ansiblePlaybook(
                     playbook: 'playbooks/grafana.yml',
-                    inventory: 'dynamic_inventory.ini',
-                    credentialsId: SSH_CRED_ID
+                    inventory: 'dynamic_inventory.ini', 
+                    credentialsId: SSH_CRED_ID, // Key is securely injected by the plugin here
                 )
-
                 ansiblePlaybook(
                     playbook: 'playbooks/test-grafana.yml',
-                    inventory: 'dynamic_inventory.ini',
-                    credentialsId: SSH_CRED_ID
+                    inventory: 'dynamic_inventory.ini', 
+                    credentialsId: SSH_CRED_ID, // Key is securely injected by the plugin here
                 )
             }
         }
-
-        stage('Approve Destroy') {
+        stage('Validate Destroy') {
+            input {
+                message "Do you want to destroy??"
+                ok "Destroy"
+            }
             steps {
-                input message: "Destroy infrastructure?", ok: "Destroy"
+                echo 'Destroy Approved'
             }
         }
-
-        stage('Terraform Destroy') {
+        stage('Destroy') {
             steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    sh "terraform destroy -auto-approve -var-file=${BRANCH_NAME}.tfvars"
-                }
+                sh "terraform destroy -auto-approve -var-file=${env.BRANCH_NAME}.tfvars"
             }
         }
-    }
-
+    }    
     post {
         always {
-            sh 'rm -f dynamic_inventory.ini || true'
+            sh 'rm -f dynamic_inventory.ini'
         }
-
+        success {
+            echo 'Success!'
+        }
         failure {
-            withCredentials([
-                [$class: 'AmazonWebServicesCredentialsBinding',
-                 credentialsId: 'aws-creds']
-            ]) {
-                sh '''
-                    terraform destroy -auto-approve -var-file=${BRANCH_NAME}.tfvars \
-                    || echo "Cleanup failed. Manual cleanup required."
-                '''
-            }
+            sh "terraform destroy -auto-approve -var-file=${env.BRANCH_NAME}.tfvars || echo \"Cleanup failed, please check manually.\""
+        }
+        aborted {
+            sh "terraform destroy -auto-approve -var-file=${env.BRANCH_NAME}.tfvars || echo \"Cleanup failed, please check manually.\""
         }
     }
 }
